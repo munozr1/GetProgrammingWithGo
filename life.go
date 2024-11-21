@@ -1,4 +1,4 @@
-package main
+package life
 
 import (
 	"fmt"
@@ -113,8 +113,8 @@ func (uni Universe) Next(x,y int) bool {
 
 func main() {
 
-	const rows = 20
-	const cols = 20
+	const rows = 30
+	const cols = 60
 
 	a := NewUniverse(rows, cols)
 	b := NewUniverse(rows, cols)
