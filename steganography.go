@@ -10,6 +10,25 @@ import (
 type PNGSignature []byte
 type CHUNK []byte
 
+const (
+	ChunkTypeIHDR ChunkType = "IHDR" // Image Header
+	ChunkTypePLTE ChunkType = "PLTE" // Palette Table
+	ChunkTypeIDAT ChunkType = "IDAT" // Image Data
+	ChunkTypeIEND ChunkType = "IEND" // Image End
+	ChunkTypetRNS ChunkType = "tRNS" // Transparency
+	ChunkTypecHRM ChunkType = "cHRM" // Chromaticity
+	ChunkTypegAMA ChunkType = "gAMA" // Gamma
+	ChunkTypeiCCP ChunkType = "iCCP" // ICC Profile
+	ChunkTypetEXt ChunkType = "tEXt" // Textual Data
+	ChunkTypezTXt ChunkType = "zTXt" // Compressed Textual Data
+	ChunkTypeiTXt ChunkType = "iTXt" // International Textual Data
+	ChunkTypebKGD ChunkType = "bKGD" // Background Color
+	ChunkTypepHYs ChunkType = "pHYs" // Physical Pixel Dimensions
+	ChunkTypehIST ChunkType = "hIST" // Image Histogram
+	ChunkTypesPLT ChunkType = "sPLT" // Suggested Palette
+	ChunkTypetIME ChunkType = "tIME" // Image Last-Modification Time
+)
+
 type IHDR struct {
 	Length						uint32//4 bytes
 	Width             uint32
@@ -41,6 +60,21 @@ func main() {
 	// getIHDR chunk
 	fmt.Printf("%+v",ihdr)
 	
+}
+
+func (*os.File) ReadChunkType () string {
+	var typ string
+
+
+	var typebuf [4]byte
+	_, err = file.Read(typebuf[:])
+	if err != nil {
+		return err
+	}
+
+	typ = string(typebuf[:])
+
+	return typ
 }
 
 func OpenImage(path string, file *os.File) error{
