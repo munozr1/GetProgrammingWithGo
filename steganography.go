@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
 	"fmt"
 	"io"
 	"log"
@@ -29,6 +30,11 @@ const (
 	ChunkTypetIME string = "tIME" // Image Last-Modification Time
 )
 
+type ImageData struct{
+	ihdr		IHDR
+	data		[]byte
+}
+
 type IHDR struct {
 	Length						uint32//4 bytes
 	Width             uint32
@@ -48,81 +54,162 @@ type pHYs struct {
 }
 
 type IDAT struct {
-	Data					[]byte
+	Data					bytes.Buffer
 	Length				uint32
 }
 
-func main() {
 
-	var ihdr 		IHDR
-	var idat		IDAT
-	var pHYs 		pHYs
-	var length 	uint32
-	var typ 		string
-	//var ChunkType string 
-	//open cover image
-	cover, err := OpenImage("badgopher.png")
+func main() {
+	//coverImagePixels, err := ImagePixels("badgopher.png")
+	cover, err := ImagePixels("good_gopher.png")
 	if err != nil {
-		log.Fatal(err)
-		return
+		log.Fatalf("Failed to process image: %v", err)
+	}
+
+	//secretImagePixels, err := ImagePixels("badgopher.png")
+	secret, err := ImagePixels("evil_gopher.png")
+	if err != nil {
+		log.Fatalf("Failed to process image: %v", err)
+	}
+	log.Println("Successfully extracted pixel data:")
+
+	compatible := compatibility(&cover, &secret)
+
+	if !compatible{
+		log.Fatal("Images not compatible")
+	}
+	fmt.Println("Images are compatible")
+}
+
+
+func compatibility(cover, secret *ImageData) bool {
+    widthMatch := cover.ihdr.Width == secret.ihdr.Width
+    heightMatch := cover.ihdr.Height == secret.ihdr.Height
+    filterMatch := cover.ihdr.FilterMethod == secret.ihdr.FilterMethod
+    colorMatch := cover.ihdr.ColorType == secret.ihdr.ColorType
+
+    // All properties must match for compatibility
+    return widthMatch && heightMatch && filterMatch && colorMatch
+}
+
+
+func ImagePixels(filePath string) (ImageData, error) {
+	var ihdr IHDR
+	var idat IDAT
+	var imgData ImageData
+
+	cover, err := OpenImage(filePath)
+	if err != nil {
+		return imgData, fmt.Errorf("failed to open image: %v", err)
 	}
 	defer cover.Close()
 
-	//iterate through data chunks of cover image
 	err = ReadIHDR(cover, &ihdr)
 	if err != nil {
-		log.Fatal(err)
-		return
+		return imgData, fmt.Errorf("failed to read IHDR: %v", err)
 	}
+	fmt.Printf("IHDR: %+v\n", ihdr)
 
-	// getIHDR chunk
-	fmt.Printf("%+v\n",ihdr)
-
+	//process the PNG chunks
 	for {
-    length, err = ReadChunkLength(cover)
-    if err != nil {
-        log.Printf("Error reading chunk length: %v", err)
-        break
-    }
+		length, err := ReadChunkLength(cover)
+		if err != nil {
+			return imgData, fmt.Errorf("error reading chunk length: %v", err)
+		}
 
-    typ, err = ReadChunkType(cover)
-    if err != nil {
-        log.Printf("Error reading chunk type: %v", err)
-        break
-    }
+		typ, err := ReadChunkType(cover)
+		if err != nil {
+			return imgData, fmt.Errorf("error reading chunk type: %v", err)
+		}
 
-    switch typ {
-    case ChunkTypepHYs:
-        err = ReadpHYs(cover, &pHYs)
-        if err != nil {
-            log.Printf("Error processing pHYs chunk: %v", err)
-        } else {
-            fmt.Printf("Processed pHYs chunk: %+v\n", pHYs)
-        }
-    case ChunkTypeIDAT:
-        err = ReadIDAT(cover, &idat, length)
-        if err != nil {
-            log.Printf("Error processing IDAT chunk: %v", err)
-        } else {
-            fmt.Printf("Processed IDAT chunk of length: %d\n", length)
-        }
-    case ChunkTypeIEND:
-        fmt.Printf("Processed IEND chunk: %+v\n", typ)
-        break
-    default:
-        log.Printf("Skipping unknown chunk type: %s of length: %d", typ, length)
-        if _, err := cover.Seek(int64(length+4), io.SeekCurrent); err != nil {
-            log.Printf("Error seeking past unknown chunk: %v", err)
-            break
-        }
-    }
+		switch typ {
+		case ChunkTypeIDAT:
+			err = ReadIDAT(cover, &idat, length)
+			if err != nil {
+				return imgData, fmt.Errorf("error processing IDAT chunk: %v", err)
+			}
+		case ChunkTypeIEND:
+			fmt.Println("Reached IEND chunk, finishing processing.")
+			break
+		default:
+			//skip unknown chunks
+			if _, err := cover.Seek(int64(length+4), io.SeekCurrent); err != nil {
+				return imgData, fmt.Errorf("error seeking past unknown chunk: %v", err)
+			}
+		}
 
 		if typ == ChunkTypeIEND {
-			fmt.Println("Processed entire image. Total IDAT length: %v", idat.Length)
 			break
 		}
 	}
 
+	//decompress IDAT data
+	rawPNGData, err := ZDecompress(&idat)
+	if err != nil {
+		return imgData, fmt.Errorf("failed to decompress IDAT data: %v", err)
+	}
+
+	//bytes per pixel
+	bpp := (int(ihdr.BitDepth) * int(ihdr.ColorType)) / 8
+
+	rawPixelData, err := ApplyFilterMethod(rawPNGData, int(ihdr.Width), int(ihdr.Height), bpp)
+	if err != nil {
+		return imgData, fmt.Errorf("error processing scanlines: %v", err)
+	}
+	imgData.ihdr = ihdr
+	imgData.data = rawPixelData
+	return imgData, nil
+}
+
+
+func ApplyFilterMethod(data []byte, width int, height int, bytesPerPixel int) ([]byte, error) {
+	//TODO: may have different filter methods other than 0
+	var pixels []byte
+	var bytesPerRow = width * bytesPerPixel
+  var scanlineLength = bytesPerRow + 1 
+
+	//iterate through the rows of the image
+	for i := 0; i < height; i++ {
+        start := i * scanlineLength
+				if start+scanlineLength > len(data) {
+					// Ensure the data is large enough to contain this scanline
+					fmt.Printf("Skipping row %d: insufficient data for scanline\n", i)
+					continue
+				}
+        filterByte := data[start]
+
+        if filterByte > 4 {
+            fmt.Errorf("unsupported filter byte at row %d: expected 0, got %d", i, filterByte)
+						continue
+        }
+
+        //extract raw pixel data from the scanline
+				//Assume filter method 0
+        rawScanline := data[start+1 : start+1+bytesPerRow]
+        pixels = append(pixels, rawScanline...)
+    }
+
+    return pixels, nil
+
+
+}
+
+
+func ZDecompress(dataBuf *IDAT) ([]byte, error) {
+    var decompressedData bytes.Buffer
+
+    r, err := zlib.NewReader(&dataBuf.Data)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create zlib reader: %v", err)
+    }
+    defer r.Close()
+
+    _, err = io.Copy(&decompressedData, r)
+    if err != nil {
+        return nil, fmt.Errorf("failed to decompress data: %v", err)
+    }
+
+    return decompressedData.Bytes(), nil
 }
 
 
@@ -157,7 +244,11 @@ func ReadIDAT(file *os.File, idat *IDAT, length uint32) error {
         return fmt.Errorf("bytes read not equal to IDAT length: (%v,%v)", count, idat.Length)
     }
 
-    idat.Data = append(idat.Data, newDataBuf...)
+    //idat.Data = append(idat.Data, newDataBuf...)
+		_, err = idat.Data.Write(newDataBuf)
+    if err != nil {
+        return fmt.Errorf("error writing to IDAT buffer: %v", err)
+    }
 		idat.Length += uint32(count)
 		// TODO: verify crc
 		_, err = ReadChunkCRC(file)
